@@ -7,9 +7,15 @@ import tempfile
 import random
 import time
 import numpy as np
-import scipy.io.wavfile as wavfile
-import scipy.signal as signal
 import wave
+try:
+    import scipy.io.wavfile as wavfile
+    import scipy.signal as signal
+    HAS_SCIPY = True
+except ImportError:
+    wavfile = None
+    signal = None
+    HAS_SCIPY = False
 import whisper
 import whisper.tokenizer
 
@@ -90,28 +96,32 @@ class VoiceProcessor:
         Decode WAV bytes directly into a normalized 16kHz mono float32 NumPy array in memory.
         This provides lightning-fast transcription with zero external subprocess/ffmpeg overhead for st.audio_input.
         """
-        # Method 1: scipy.io.wavfile
-        try:
-            sr, arr = wavfile.read(io.BytesIO(audio_bytes))
-            if arr.ndim > 1:
-                arr = arr.mean(axis=1)
-            if arr.dtype == np.int16:
-                arr = arr.astype(np.float32) / 32768.0
-            elif arr.dtype == np.int32:
-                arr = arr.astype(np.float32) / 2147483648.0
-            elif arr.dtype == np.uint8:
-                arr = (arr.astype(np.float32) - 128.0) / 128.0
-            elif arr.dtype in (np.float32, np.float64):
-                arr = arr.astype(np.float32)
+        # Method 1: scipy.io.wavfile (if installed)
+        if HAS_SCIPY and wavfile is not None:
+            try:
+                sr, arr = wavfile.read(io.BytesIO(audio_bytes))
+                if arr.ndim > 1:
+                    arr = arr.mean(axis=1)
+                if arr.dtype == np.int16:
+                    arr = arr.astype(np.float32) / 32768.0
+                elif arr.dtype == np.int32:
+                    arr = arr.astype(np.float32) / 2147483648.0
+                elif arr.dtype == np.uint8:
+                    arr = (arr.astype(np.float32) - 128.0) / 128.0
+                elif arr.dtype in (np.float32, np.float64):
+                    arr = arr.astype(np.float32)
 
-            if sr != 16000 and len(arr) > 0:
-                target_len = int(len(arr) * 16000 / sr)
-                arr = signal.resample(arr, target_len).astype(np.float32)
-            return arr
-        except Exception:
-            pass
+                if sr != 16000 and len(arr) > 0:
+                    target_len = int(len(arr) * 16000 / sr)
+                    if signal is not None:
+                        arr = signal.resample(arr, target_len).astype(np.float32)
+                    else:
+                        arr = np.interp(np.linspace(0, len(arr), target_len, endpoint=False), np.arange(len(arr)), arr).astype(np.float32)
+                return arr
+            except Exception:
+                pass
 
-        # Method 2: standard library wave module
+        # Method 2: standard library wave module (zero external dependencies)
         try:
             with wave.open(io.BytesIO(audio_bytes), 'rb') as wf:
                 n_channels = wf.getnchannels()
@@ -134,7 +144,10 @@ class VoiceProcessor:
                         arr = arr.reshape(-1, n_channels).mean(axis=1)
                     if framerate != 16000 and len(arr) > 0:
                         target_len = int(len(arr) * 16000 / framerate)
-                        arr = signal.resample(arr, target_len).astype(np.float32)
+                        if HAS_SCIPY and signal is not None:
+                            arr = signal.resample(arr, target_len).astype(np.float32)
+                        else:
+                            arr = np.interp(np.linspace(0, len(arr), target_len, endpoint=False), np.arange(len(arr)), arr).astype(np.float32)
                     return arr
         except Exception:
             pass
